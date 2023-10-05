@@ -1,0 +1,16 @@
+{
+  "algod-api": {
+    "address": "http://192.168.1.210:8181",
+    "token": ".."
+  },
+  "pkeys": {
+    "SPAM": "25 word mnemonic"
+  },  
+  "spam": {
+    "threads": 10,  
+    "rate": 1500
+  },
+  "singletons": {
+    "spam": true
+  }
+} 

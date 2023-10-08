@@ -28,9 +28,18 @@ type SParams struct {
 
 type SPAMWorker struct {
 	spamAccount crypto.Account
+	spamming    bool
 	txChan      chan Stx
 	sParams     SParams
 	WorkerCommon
+}
+
+func (w *SPAMWorker) StartSpamming() {
+	w.spamming = true
+}
+
+func (w *SPAMWorker) StopSpamming() {
+	w.spamming = false
 }
 
 func SPAMWorkerNew(ctx context.Context, apis *WorkerAPIs, log *logrus.Logger, cfg *config.BotConfig) Worker {
@@ -89,7 +98,7 @@ func (w *SPAMWorker) updateSuggestedParams(ctx context.Context) {
 		return
 	}
 	w.log.Infof("Suggested first round is %d, minfee: %d", txParams.FirstRoundValid, txParams.MinFee)
-	txParams.Fee = 2_000
+	txParams.Fee = types.MicroAlgos(w.cfg.SPAM.FlatFee)
 	txParams.FlatFee = true
 	w.sParams.Lock()
 	w.sParams.params = &txParams
@@ -112,6 +121,10 @@ func (w *SPAMWorker) spamGen(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
 			return
+		}
+		if !w.spamming { // check if spamming is enabled
+			time.Sleep(1 * time.Second) // sleep for a while if not spamming
+			continue
 		}
 
 		// var atc = transaction.AtomicTransactionComposer{}

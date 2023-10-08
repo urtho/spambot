@@ -8,9 +8,15 @@
   },  
   "spam": {
     "threads": 10,  
-    "rate": 1500
+    "rate": 1500,
+    "flatfee": 2000
   },
   "singletons": {
     "spam": true
-  }
+  },
+  "monitored": {
+		"address": "YOUR_MONITORED_ADDRESS",
+		"spam-threshold": 100000,
+		"stop-spam-threshold": 1000000
+	}
 } 

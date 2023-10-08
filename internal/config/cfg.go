@@ -32,16 +32,24 @@ type NodeConfig struct {
 type SPAMConfig struct {
 	Threads int `json:"threads"`
 	Rate    int `json:"rate"`
+	FlatFee int `json:"flatfee"`
 }
 
 type KV map[string]string
 type KB map[string]bool
+
+type MonitoredConfig struct {
+	Address           string `json:"address"`
+	SpamThreshold     uint64 `json:"spam-threshold"`
+	StopSpamThreshold uint64 `json:"stop-spam-threshold"`
+}
 
 type BotConfig struct {
 	Algod  *NodeConfig `json:"algod-api"`
 	SPAM   *SPAMConfig `json:"spam"`
 	PKeys  KV          `json:"pkeys"`
 	WSnglt KB          `json:"singletons"`
+	Monitored *MonitoredConfig `json:"monitored"`
 }
 
 var defaultConfig = BotConfig{}
@@ -59,9 +67,21 @@ func LoadConfig() (cfg BotConfig, err error) {
 	if cfg.PKeys == nil {
 		return cfg, fmt.Errorf("[CFG] Missing pkeys config")
 	}
+	
+	if cfg.SPAM == nil {
+		return cfg, fmt.Errorf("[CFG] Missing spam config")
+	}
+
+	if cfg.SPAM.FlatFee < 1000 {
+		return cfg, fmt.Errorf("[CFG] Invalid or missing flatfee config")
+	}
 
 	if cfg.WSnglt == nil || len(cfg.WSnglt) == 0 {
 		return cfg, fmt.Errorf("[CFG] Singleton config missing")
+	}
+
+	if cfg.Monitored == nil {
+		return cfg, fmt.Errorf("[CFG] Missing monitored config")
 	}
 
 	return cfg, err

@@ -29,6 +29,33 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+func checkBalanceAndToggleSpammer(ctx context.Context, apis *worker.WorkerAPIs, cfg *config.BotConfig, spamWorkers []*worker.SPAMWorker) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Get account information
+			accountInfo, err := apis.Aapi.Client.AccountInformation(cfg.Monitored.Address).Do(ctx)
+			if err != nil {
+				log.Error(err)
+				continue
+			}
+			// Start or stop spamming based on balance
+			for _, spamWorker := range spamWorkers {
+				if accountInfo.Amount > cfg.Monitored.SpamThreshold {
+					spamWorker.StartSpamming()
+				} else if accountInfo.Amount <= cfg.Monitored.StopSpamThreshold {
+					spamWorker.StopSpamming()
+				}
+			}
+		}
+	}
+}
+
 func init() {
 	log.SetFormatter(&log.JSONFormatter{})
 	log.SetOutput(os.Stderr)
@@ -73,9 +100,14 @@ func main() {
 		worker.SPAMWorkerNew(ctx, apis, slog, &cfg),
 	}
 
+	var spamWorkers []*worker.SPAMWorker
+
 	for _, w := range workers {
 		if err := w.Config(ctx); err != nil {
 			log.Panic(err)
+		}
+		if spamWorker, ok := w.(*worker.SPAMWorker); ok {
+			spamWorkers = append(spamWorkers, spamWorker)
 		}
 	}
 
@@ -84,6 +116,8 @@ func main() {
 			log.Panic(err)
 		}
 	}
+
+	go checkBalanceAndToggleSpammer(ctx, apis, &cfg, spamWorkers)
 
 	<-ctx.Done()
 	time.Sleep(time.Second)

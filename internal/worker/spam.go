@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/algonode/spambot/internal/config"
@@ -23,13 +24,18 @@ type Stx []byte
 
 type SParams struct {
 	sync.RWMutex
-	params *types.SuggestedParams
+	params  *types.SuggestedParams
+	lastRnd atomic.Uint64
 }
 
 type SPAMWorker struct {
 	spamAccount crypto.Account
 	txChan      chan Stx
 	sParams     SParams
+	txnCnt      atomic.Uint64
+	txnErrCnt   atomic.Uint64
+	txnLogGate  atomic.Bool
+	txnErrGate  atomic.Bool
 	WorkerCommon
 }
 
@@ -54,6 +60,9 @@ func (w *SPAMWorker) setupSpammer(ctx context.Context) error {
 		return err
 	}
 
+	w.txnCnt.Store(0)
+	w.txnErrCnt.Store(0)
+
 	w.spamAccount, err = crypto.AccountFromPrivateKey(pk)
 	if err != nil {
 		return err
@@ -75,7 +84,7 @@ func (w *SPAMWorker) Config(ctx context.Context) error {
 		return nil
 	}
 
-	w.log.Infof("Spammer %s booted with %d thread and rate %d", w.spamAccount.Address.String()[0:8], w.cfg.SPAM.Threads, w.cfg.SPAM.Rate)
+	w.log.Infof("Spammer %s booted with %d thread and rate %d", w.spamAccount.Address.String(), w.cfg.SPAM.Threads, w.cfg.SPAM.Rate)
 
 	w.txChan = make(chan Stx, 500)
 
@@ -89,8 +98,15 @@ func (w *SPAMWorker) updateSuggestedParams(ctx context.Context) {
 		return
 	}
 	w.log.Infof("Suggested first round is %d, minfee: %d", txParams.FirstRoundValid, txParams.MinFee)
-	txParams.Fee = 2_000
+	old := w.sParams.lastRnd.Load()
+	if w.sParams.lastRnd.CompareAndSwap(old, uint64(txParams.FirstRoundValid)) {
+		w.txnErrGate.Store(false)
+		w.txnLogGate.Store(false)
+	}
+	txParams.Fee = 1_000
 	txParams.FlatFee = true
+	txParams.FirstRoundValid--
+	txParams.LastRoundValid = txParams.FirstRoundValid + 10
 	w.sParams.Lock()
 	w.sParams.params = &txParams
 	w.sParams.Unlock()
@@ -99,39 +115,25 @@ func (w *SPAMWorker) updateSuggestedParams(ctx context.Context) {
 func (w *SPAMWorker) execSync(ctx context.Context, stx Stx) {
 	sendResponse, err := w.apis.Aapi.Client.SendRawTransaction(stx).Do(ctx)
 	if err != nil {
-		w.log.WithError(err).Error("Error sending transaction")
+		tcnt := w.txnErrCnt.Add(1)
+		if w.txnErrGate.CompareAndSwap(false, true) {
+			w.log.WithError(err).Errorf("Error sending transaction, errCnt:%d", tcnt)
+		}
 		return
-	}
-	if sendResponse[0] == 'A' {
-		w.log.Infof("Submitted transaction %s\n", sendResponse)
+	} else {
+		tcnt := w.txnCnt.Add(1)
+		if w.txnLogGate.CompareAndSwap(false, true) {
+			w.log.Infof("Submitted transaction %s, total: %d, txn\n", sendResponse, tcnt)
+		}
 	}
 }
 
 func (w *SPAMWorker) spamGen(ctx context.Context) {
-	rl := ratelimit.New(w.cfg.SPAM.Rate) // per second
+	rl := ratelimit.New(w.cfg.SPAM.Rate, ratelimit.WithoutSlack)
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-
-		// var atc = transaction.AtomicTransactionComposer{}
-		// signer := transaction.BasicAccountTransactionSigner{Account: w.spamAccount}
-		// for n := 1; n <= 15; n++ {
-		// 	if tx, err := w.makeTX(ctx); err == nil {
-		// 		atc.AddTransaction(transaction.TransactionWithSigner{Txn: *tx, Signer: signer})
-		// 	}
-		// }
-
-		// stxs, err := atc.GatherSignatures()
-		// if err != nil {
-		// 	continue
-		// }
-
-		// var serializedStxs []byte
-		// for _, stx := range stxs {
-		// 	serializedStxs = append(serializedStxs, stx...)
-		// }
-		// w.txChan <- serializedStxs
 
 		rl.Take()
 		if stx, err := w.makeSTX(ctx); err == nil {
@@ -166,30 +168,6 @@ func (w *SPAMWorker) makeSTX(ctx context.Context) (Stx, error) {
 	return signedTxn, nil
 }
 
-func (w *SPAMWorker) makeTX(ctx context.Context) (*types.Transaction, error) {
-	var params *types.SuggestedParams
-	w.sParams.RLock()
-	params = w.sParams.params
-	w.sParams.RUnlock()
-
-	// buf := make([]byte, 1020)
-	// rand.Read(buf)
-
-	txn, err := transaction.MakePaymentTxn(
-		w.spamAccount.Address.String(),
-		crypto.GenerateAccount().Address.String(),
-		0,
-		nil,
-		"",
-		*params)
-	if err != nil {
-		w.log.WithError(err).Error("Error creating transaction")
-		return nil, err
-	}
-
-	return &txn, nil
-}
-
 func (w *SPAMWorker) spamExec(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
@@ -210,7 +188,7 @@ func (w *SPAMWorker) spamExec(ctx context.Context) {
 }
 
 func (w *SPAMWorker) paramsUpdater(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	for {
 		if ctx.Err() != nil {
 			ticker.Stop()
@@ -236,6 +214,10 @@ func (w *SPAMWorker) Spawn(ctx context.Context) error {
 	for i := 0; i < w.cfg.SPAM.Threads; i++ {
 		go w.spamExec(ctx)
 	}
-	go w.spamGen(ctx)
+	if w.cfg.SPAM.CleanFile != "" {
+		go w.spamCleanFile(ctx)
+	} else {
+		go w.spamGen(ctx)
+	}
 	return nil
 }

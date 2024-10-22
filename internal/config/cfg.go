@@ -30,8 +30,9 @@ type NodeConfig struct {
 }
 
 type SPAMConfig struct {
-	Threads int `json:"threads"`
-	Rate    int `json:"rate"`
+	Threads   int    `json:"threads"`
+	Rate      int    `json:"rate"`
+	CleanFile string `json:"cleanfile"`
 }
 
 type KV map[string]string
